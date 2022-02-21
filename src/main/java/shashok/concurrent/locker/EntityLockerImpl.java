@@ -64,10 +64,10 @@ public class EntityLockerImpl<T> implements EntityLocker<T> {
         final Thread currentThread = Thread.currentThread();
         final ReentrantLock lock = entityLockMap.getOrDefault(entityId, null);
         if (lock == null) {
-            throw new EntityLockerException(noLocksError(entityId));
+            throw new EntityLockerException(noLocksErrorMessage(entityId));
         }
         if (!lock.isHeldByCurrentThread()) {
-            throw new EntityLockerException(incorrectUnlockingThread(entityId, currentThread));
+            throw new EntityLockerException(incorrectUnlockingThreadMessage(entityId, currentThread));
         }
         if (lock.getHoldCount() == 1) {
             threadsLocks.get(currentThread).remove(entityId);
@@ -96,7 +96,7 @@ public class EntityLockerImpl<T> implements EntityLocker<T> {
     @Override
     public void globalUnlock() throws EntityLockerException {
         if (!(Thread.currentThread() == globalLockThread)) {
-            throw new EntityLockerException(incorrectUnlockingGlobalThread(Thread.currentThread()));
+            throw new EntityLockerException(incorrectUnlockingGlobalThreadMessage(Thread.currentThread()));
         }
         globalLockThread = null;
         globalLock.writeLock().unlock();
@@ -190,15 +190,15 @@ public class EntityLockerImpl<T> implements EntityLocker<T> {
                 threadsLocks.getOrDefault(currentThread, null) != null);
     }
 
-    private String noLocksError(T entityId) {
+    private String noLocksErrorMessage(T entityId) {
         return "Entity " + entityId + " is not locked, cannot unlock";
     }
 
-    private String incorrectUnlockingThread(T entityId, Thread thread) {
+    private String incorrectUnlockingThreadMessage(T entityId, Thread thread) {
         return "Thread " + thread.getName() + " can't unlock entity " + entityId + " because lock belongs to another thread";
     }
 
-    private String incorrectUnlockingGlobalThread(Thread thread) {
+    private String incorrectUnlockingGlobalThreadMessage(Thread thread) {
         return "Thread " + thread.getName() + " can't unlock global lock because lock belongs to another thread";
     }
 
