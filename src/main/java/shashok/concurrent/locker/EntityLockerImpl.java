@@ -24,7 +24,7 @@ public class EntityLockerImpl<T> implements EntityLocker<T> {
     private final Map<Thread, T> waitingThreads;
     private final Map<Thread, Set<T>> threadsLocks;
 
-    private Thread globalLockThread;
+    private volatile Thread globalLockThread;
 
     public EntityLockerImpl() {
         entityLockMap = new ConcurrentHashMap<>();
@@ -51,11 +51,11 @@ public class EntityLockerImpl<T> implements EntityLocker<T> {
     @Override
     public boolean timeoutLock(T entityId, long timeout, TimeUnit timeUnit) throws EntityLockerException {
         return generalLock(entityId, lock -> {
-           try {
-               return lock.tryLock(timeout, timeUnit);
-           } catch(InterruptedException e) {
-               return false;
-           }
+            try {
+                return lock.tryLock(timeout, timeUnit);
+            } catch(InterruptedException e) {
+                return false;
+            }
         });
     }
 
@@ -64,17 +64,19 @@ public class EntityLockerImpl<T> implements EntityLocker<T> {
         final Thread currentThread = Thread.currentThread();
         final ReentrantLock lock = entityLockMap.getOrDefault(entityId, null);
         if (lock == null) {
-            throw new EntityLockerException(noLocksErrorMessage(entityId));
+            throw new EntityLockerException(noLocksError(entityId));
         }
         if (!lock.isHeldByCurrentThread()) {
-            throw new EntityLockerException(incorrectUnlockingThreadMessage(entityId, currentThread));
+            throw new EntityLockerException(incorrectUnlockingThread(entityId, currentThread));
         }
         if (lock.getHoldCount() == 1) {
-            threadsLocks.get(currentThread).remove(entityId);
-            if (threadsLocks.get(currentThread).isEmpty()) {
-                threadsLocks.remove(currentThread);
+            synchronized (this) {
+                threadsLocks.get(currentThread).remove(entityId);
+                if (threadsLocks.get(currentThread).isEmpty()) {
+                    threadsLocks.remove(currentThread);
+                }
+                entityLockMap.remove(entityId);
             }
-            entityLockMap.remove(entityId);
         }
         lock.unlock();
         globalLock.readLock().unlock();
@@ -96,9 +98,11 @@ public class EntityLockerImpl<T> implements EntityLocker<T> {
     @Override
     public void globalUnlock() throws EntityLockerException {
         if (!(Thread.currentThread() == globalLockThread)) {
-            throw new EntityLockerException(incorrectUnlockingGlobalThreadMessage(Thread.currentThread()));
+            throw new EntityLockerException(incorrectUnlockingGlobalThread(Thread.currentThread()));
         }
-        globalLockThread = null;
+        synchronized (this) {
+            globalLockThread = null;
+        }
         globalLock.writeLock().unlock();
     }
 
@@ -130,19 +134,23 @@ public class EntityLockerImpl<T> implements EntityLocker<T> {
     }
 
     private boolean generalGlobalLock(Function<Lock, Boolean> callable) throws EntityLockerException {
-        final Thread currentThread = Thread.currentThread();
-        if (!canThreadAcquireGlobalLock()) {
-            throw new EntityLockerException(globalDeadlockCheckerMessage(currentThread));
+        synchronized (this) {
+            final Thread currentThread = Thread.currentThread();
+            if (!canThreadAcquireGlobalLock()) {
+                throw new EntityLockerException(globalDeadlockCheckerMessage(currentThread));
+            }
+            checkGlobalDeadlock();
+            waitingThreads.put(currentThread, null);
+            globalLockThread = currentThread;
         }
-        checkGlobalDeadlock();
-        waitingThreads.put(currentThread, null);
-        globalLockThread = currentThread;
         final boolean lockingResult = callable.apply(globalLock.writeLock());
-        waitingThreads.remove(globalLockThread);
+        synchronized (this) {
+            waitingThreads.remove(globalLockThread);
+        }
         return lockingResult;
     }
 
-    private void putToWait(Thread  currentThread, T entityId, ReentrantLock lock) throws EntityLockerException {
+    private synchronized void putToWait(Thread  currentThread, T entityId, ReentrantLock lock) throws EntityLockerException {
         if (lock.isLocked() && !lock.isHeldByCurrentThread()) {
             if (checkDeadlock(entityId)) {
                 globalLock.readLock().unlock();
@@ -152,7 +160,7 @@ public class EntityLockerImpl<T> implements EntityLocker<T> {
         }
     }
 
-    private void putFromWaitingToLocking(Thread currentThread, T entityId, boolean ifLock) {
+    private synchronized void putFromWaitingToLocking(Thread currentThread, T entityId, boolean ifLock) {
         waitingThreads.remove(currentThread);
         if (ifLock) {
             entitiesLockedBy.put(entityId, currentThread);
@@ -190,15 +198,15 @@ public class EntityLockerImpl<T> implements EntityLocker<T> {
                 threadsLocks.getOrDefault(currentThread, null) != null);
     }
 
-    private String noLocksErrorMessage(T entityId) {
+    private String noLocksError(T entityId) {
         return "Entity " + entityId + " is not locked, cannot unlock";
     }
 
-    private String incorrectUnlockingThreadMessage(T entityId, Thread thread) {
+    private String incorrectUnlockingThread(T entityId, Thread thread) {
         return "Thread " + thread.getName() + " can't unlock entity " + entityId + " because lock belongs to another thread";
     }
 
-    private String incorrectUnlockingGlobalThreadMessage(Thread thread) {
+    private String incorrectUnlockingGlobalThread(Thread thread) {
         return "Thread " + thread.getName() + " can't unlock global lock because lock belongs to another thread";
     }
 
