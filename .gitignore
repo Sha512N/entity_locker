@@ -1,2 +1,4 @@
 # Project exclude paths
 /target/
+/entity_locker.iml
+/.idea/
